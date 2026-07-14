@@ -1,0 +1,10 @@
+{
+  "name": "LGNM News Collector",
+  "active": false,
+  "nodes": [],
+  "connections": {},
+  "settings": {
+    "timezone": "Africa/Tripoli"
+  },
+  "versionId": "sprint-1-placeholder"
+}
