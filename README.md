@@ -11,15 +11,12 @@ Implemented:
 - Seed data for 50+ Libyan government entities and official source websites.
 - Docker Compose stack for PostgreSQL, pgAdmin, and n8n.
 - Placeholder n8n workflow files for future source management, collection, and reporting.
-- Sprint 3 website collection pipeline for homepage discovery, article-page downloads, field extraction, duplicate-safe persistence, and collection stats.
 
-Out of scope for current implemented sprints:
+Not implemented in Sprint 1:
 
 - AI analysis.
 - Facebook collection.
 - X collection.
-- Telegram ingestion or notifications.
-- Email delivery.
 
 ## Repository structure
 
@@ -36,8 +33,7 @@ Out of scope for current implemented sprints:
 └── workflows/
     ├── workflow_01_source_manager.json
     ├── workflow_02_news_collector.json
-    ├── workflow_04_daily_report.json
-    └── workflow_05_collect_websites.json
+    └── workflow_04_daily_report.json
 ```
 
 ## Prerequisites
@@ -84,7 +80,6 @@ For production, store secrets in a protected environment file or secret manager 
    ```bash
    docker compose exec -T postgres psql -U postgres -d lgnm -c "SELECT COUNT(*) FROM government_entities;"
    docker compose exec -T postgres psql -U postgres -d lgnm -c "SELECT COUNT(*) FROM sources;"
-   docker compose exec -T postgres psql -U postgres -d lgnm -c "SELECT COUNT(*) FROM vw_website_collection_queue;"
    ```
 
 ## Local service URLs
@@ -115,10 +110,6 @@ docker compose ps
 docker compose exec -T postgres psql -U postgres -d lgnm -c "SELECT COUNT(*) FROM government_entities;"
 docker compose down
 ```
-
-## Sprint 3 website collection pipeline
-
-Import `workflows/workflow_05_collect_websites.json` into n8n after starting the stack, assign the `LGNM PostgreSQL` credential to its PostgreSQL nodes, and run it manually before enabling the hourly schedule. Detailed instructions are in `docs/Sprint3.md`.
 
 ## License
 
