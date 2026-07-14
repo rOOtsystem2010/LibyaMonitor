@@ -1,0 +1,308 @@
+{
+  "name": "LGNM Collect Websites",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1100,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "hourly-schedule",
+      "name": "Hourly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1100,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT source_id, source_name, source_slug, source_url_id, website_url FROM vw_website_collection_queue;",
+        "options": {}
+      },
+      "id": "read-enabled-sources",
+      "name": "Read Enabled Sources",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -860,
+        -40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_LGNM_POSTGRES_CREDENTIAL_ID",
+          "name": "LGNM PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-sources",
+      "name": "Split Sources",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -620,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT start_website_collection_run($1::bigint, $2::bigint, $3::text) AS collection_run_id;",
+        "queryReplacement": "={{ [$json.source_id, $json.source_url_id, $json.website_url] }}",
+        "options": {}
+      },
+      "id": "start-collection-run",
+      "name": "Start Collection Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -380,
+        -40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_LGNM_POSTGRES_CREDENTIAL_ID",
+          "name": "LGNM PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Split Sources').item.json.website_url }}",
+        "method": "GET",
+        "responseFormat": "string",
+        "options": {
+          "timeout": 45000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": true,
+              "maxRedirects": 5
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "neverError": true
+            }
+          },
+          "headers": {
+            "User-Agent": "LGNM Website Collector/0.3 (+https://libyamonitor.local)"
+          }
+        }
+      },
+      "id": "download-homepage",
+      "name": "Download Homepage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -140,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "html": "={{ $json.data || $json.body || $json }}",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "links",
+              "cssSelector": "a",
+              "returnValue": "attribute",
+              "attribute": "href",
+              "returnArray": true
+            }
+          ]
+        }
+      },
+      "id": "extract-homepage-links",
+      "name": "Extract Homepage Links",
+      "type": "n8n-nodes-base.htmlExtract",
+      "typeVersion": 1.2,
+      "position": [
+        100,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $('Split Sources').item.json;\nconst run = $('Start Collection Run').item.json;\nconst rawLinks = Array.isArray($json.links) ? $json.links : [];\nconst seen = new Set();\nconst urls = [];\nconst clean = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();\nconst decodeEntities = (value) => clean(value)\n  .replace(/&nbsp;/g, ' ')\n  .replace(/&amp;/g, '&')\n  .replace(/&quot;/g, '\"')\n  .replace(/&#39;/g, \"'\")\n  .replace(/&lt;/g, '<')\n  .replace(/&gt;/g, '>');\nconst stripTags = (html) => decodeEntities(String(html ?? '').replace(/<script[\\s\\S]*?<\\/script>/gi, ' ').replace(/<style[\\s\\S]*?<\\/style>/gi, ' ').replace(/<[^>]+>/g, ' '));\nconst firstMatch = (html, patterns) => {\n  for (const pattern of patterns) {\n    const match = html.match(pattern);\n    if (match && match[1]) return decodeEntities(match[1]);\n  }\n  return '';\n};\n\nfor (const raw of rawLinks) {\n  if (!raw || typeof raw !== 'string') continue;\n  const trimmed = raw.trim();\n  if (!trimmed || trimmed.startsWith('#')) continue;\n  if (/^(mailto:|tel:|javascript:)/i.test(trimmed)) continue;\n\n  let parsed;\n  try {\n    parsed = new URL(trimmed, source.website_url);\n  } catch (error) {\n    continue;\n  }\n\n  if (!['http:', 'https:'].includes(parsed.protocol)) continue;\n  parsed.hash = '';\n  const normalizedUrl = parsed.toString();\n  if (seen.has(normalizedUrl)) continue;\n  seen.add(normalizedUrl);\n  urls.push(normalizedUrl);\n}\n\nconst articles = [];\nfor (const url of urls) {\n  try {\n    const response = await fetch(url, {\n      headers: { 'User-Agent': 'LGNM Website Collector/0.3 (+https://libyamonitor.local)' },\n      redirect: 'follow',\n    });\n    const html = await response.text();\n    const title = firstMatch(html, [\n      /<meta[^>]+property=[\"']og:title[\"'][^>]+content=[\"']([^\"']+)[\"'][^>]*>/i,\n      /<h1[^>]*>([\\s\\S]*?)<\\/h1>/i,\n      /<title[^>]*>([\\s\\S]*?)<\\/title>/i,\n    ]) || url;\n    const rawDate = firstMatch(html, [\n      /<meta[^>]+property=[\"']article:published_time[\"'][^>]+content=[\"']([^\"']+)[\"'][^>]*>/i,\n      /<time[^>]+datetime=[\"']([^\"']+)[\"'][^>]*>/i,\n      /<time[^>]*>([\\s\\S]*?)<\\/time>/i,\n    ]);\n    let publishedAt = '';\n    if (rawDate) {\n      const parsedDate = new Date(rawDate);\n      if (!Number.isNaN(parsedDate.getTime())) publishedAt = parsedDate.toISOString();\n    }\n    const articleHtml = firstMatch(html, [/<article[^>]*>([\\s\\S]*?)<\\/article>/i, /<main[^>]*>([\\s\\S]*?)<\\/main>/i]) || html;\n    const content = stripTags(articleHtml);\n\n    articles.push({\n      url,\n      title,\n      published_at: publishedAt,\n      content,\n      metadata: {\n        website_url: source.website_url,\n        source_name: source.source_name,\n        http_status: response.status,\n        raw_publication_date: rawDate || null,\n        pipeline: 'website_collection',\n      },\n    });\n  } catch (error) {\n    articles.push({\n      url,\n      title: url,\n      published_at: '',\n      content: '',\n      metadata: {\n        website_url: source.website_url,\n        source_name: source.source_name,\n        fetch_error: error.message,\n        pipeline: 'website_collection',\n      },\n    });\n  }\n}\n\nreturn [{\n  json: {\n    source_id: source.source_id,\n    source_url_id: source.source_url_id,\n    website_url: source.website_url,\n    collection_run_id: run.collection_run_id,\n    items_found: urls.length,\n    articles,\n  },\n}];"
+      },
+      "id": "normalize-download-extract-articles",
+      "name": "Normalize Download Extract Articles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT record_collected_articles_bulk($1::bigint, $2::bigint, $3::bigint, $4::integer, $5::jsonb) AS inserted_count;",
+        "queryReplacement": "={{ [$json.collection_run_id, $json.source_id, $json.source_url_id, $json.items_found, JSON.stringify($json.articles)] }}",
+        "options": {}
+      },
+      "id": "save-articles-and-stats",
+      "name": "Save Articles and Stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        580,
+        -40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_LGNM_POSTGRES_CREDENTIAL_ID",
+          "name": "LGNM PostgreSQL"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Enabled Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hourly Schedule": {
+      "main": [
+        [
+          {
+            "node": "Read Enabled Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Enabled Sources": {
+      "main": [
+        [
+          {
+            "node": "Split Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Sources": {
+      "main": [
+        [
+          {
+            "node": "Start Collection Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Collection Run": {
+      "main": [
+        [
+          {
+            "node": "Download Homepage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Homepage": {
+      "main": [
+        [
+          {
+            "node": "Extract Homepage Links",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Homepage Links": {
+      "main": [
+        [
+          {
+            "node": "Normalize Download Extract Articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Download Extract Articles": {
+      "main": [
+        [
+          {
+            "node": "Save Articles and Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Articles and Stats": {
+      "main": [
+        [
+          {
+            "node": "Split Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Africa/Tripoli",
+    "saveManualExecutions": true
+  },
+  "versionId": "sprint-3-website-collection-pipeline",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [
+    {
+      "name": "LGNM"
+    },
+    {
+      "name": "Sprint 3"
+    },
+    {
+      "name": "Website Collection"
+    }
+  ]
+}
